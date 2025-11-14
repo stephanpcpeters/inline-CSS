@@ -35,6 +35,8 @@ env/
 
 # Test outputs
 test-output-*/
+output/
+output-*/
 
 # OS
 .DS_Store
