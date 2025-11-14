@@ -10,8 +10,11 @@ A Python tool that scans HTML and CSS files, identifies actually used styles, an
   - `style-tag`: Embedded `<style>` tags in each HTML file
   - `inline`: All styles as inline attributes (ideal for email newsletters)
 - **CSS Specificity Support**: Properly handles CSS cascade and specificity rules
-- **Comprehensive Selector Support**: Works with classes, IDs, elements, pseudo-classes, attributes, and more
+- **Comprehensive Selector Support**: Works with classes, IDs, elements, pseudo-classes, pseudo-elements (::before, ::after), attributes, and more
+- **@media Query Support**: Fully preserves responsive design with @media queries (external and style-tag modes)
+- **Pseudo-element Support**: Handles ::before, ::after, ::first-line, ::first-letter, and other pseudo-elements
 - **@font-face Support**: Preserves font declarations
+- **External CDN Preservation**: Keeps external font links (Google Fonts, etc.) intact
 - **Resource Management**: Automatically copies non-HTML/CSS files and maintains proper references
 - **Multi-file Processing**: Handles multiple HTML files in a single pass
 - **Safe**: Never modifies original files - all output goes to a separate directory
@@ -127,9 +130,12 @@ output-dir/
 
 ### ✅ Supported
 - All CSS selectors (class, ID, element, attribute, pseudo-classes)
+- **Pseudo-elements** (::before, ::after, ::first-line, ::first-letter, etc.)
+- **@media queries** (fully preserved in external and style-tag modes)
 - CSS specificity and cascade
 - `@font-face` rules
 - External stylesheets
+- **External CDN links preserved** (Google Fonts, etc.)
 - `<style>` tags
 - Inline styles
 - Multiple HTML files
@@ -137,9 +143,13 @@ output-dir/
 
 ### ❌ Not Supported
 - CSS variables (custom properties)
-- `@media` queries
 - `@keyframes` animations
 - `@import` statements (use external files instead)
+
+### ⚠️ Important Notes
+- **@media queries**: Cannot be inlined in `inline` mode (media queries are CSS-only and don't work as inline styles)
+- **Pseudo-elements**: Cannot be inlined in `inline` mode (::before, ::after, etc. are virtual elements)
+- For email newsletters needing responsive design, use `external` or `style-tag` mode instead of `inline`
 
 ## Tips for Email Newsletters
 

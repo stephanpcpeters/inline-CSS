@@ -22,13 +22,15 @@ cssutils.log.setLevel(logging.CRITICAL)
 
 class CSSRule:
     """Represents a CSS rule with selector and declarations"""
-    def __init__(self, selector: str, declarations: Dict[str, str], specificity: Tuple[int, int, int, int]):
+    def __init__(self, selector: str, declarations: Dict[str, str], specificity: Tuple[int, int, int, int], media_query: Optional[str] = None):
         self.selector = selector
         self.declarations = declarations
         self.specificity = specificity
+        self.media_query = media_query  # None for regular rules, contains @media condition for media queries
 
     def __repr__(self):
-        return f"CSSRule({self.selector}, specificity={self.specificity})"
+        media = f", media={self.media_query}" if self.media_query else ""
+        return f"CSSRule({self.selector}, specificity={self.specificity}{media})"
 
 
 class CSSParser:
@@ -88,6 +90,22 @@ class CSSParser:
                     for prop in rule.style:
                         declarations[prop.name] = prop.value
                     rules.append(CSSRule('@font-face', declarations, (0, 0, 0, 0)))
+
+                elif rule.type == rule.MEDIA_RULE:
+                    # Handle @media queries
+                    media_query = rule.media.mediaText
+                    # Recursively parse rules inside @media
+                    for media_rule in rule.cssRules:
+                        if media_rule.type == media_rule.STYLE_RULE:
+                            selector_list = media_rule.selectorText.split(',')
+                            declarations = {}
+                            for prop in media_rule.style:
+                                declarations[prop.name] = prop.value
+
+                            for selector in selector_list:
+                                selector = selector.strip()
+                                specificity = CSSParser.calculate_specificity(selector)
+                                rules.append(CSSRule(selector, declarations.copy(), specificity, media_query))
         except Exception as e:
             print(f"Warning: CSS parsing error: {e}")
 
@@ -145,6 +163,14 @@ class HTMLProcessor:
         """Get all HTML elements (tags) from the document"""
         return self.soup.find_all(True)  # True matches all tags
 
+    def _strip_pseudo_elements(self, selector: str) -> str:
+        """Remove pseudo-elements from selector for matching purposes"""
+        # Remove ::before, ::after, ::first-line, ::first-letter, etc.
+        # Also handle single colon syntax :before, :after
+        selector = re.sub(r'::(before|after|first-line|first-letter|placeholder|selection|backdrop)', '', selector)
+        selector = re.sub(r':(before|after|first-line|first-letter)', '', selector)
+        return selector.strip()
+
     def element_matches_selector(self, element: Tag, selector: str) -> bool:
         """Check if an element matches a CSS selector"""
         try:
@@ -168,9 +194,17 @@ class HTMLProcessor:
             if rule.selector == '@font-face':
                 continue
 
-            # Check if any element matches this selector
+            # For selectors with pseudo-elements, check if the base selector matches
+            base_selector = self._strip_pseudo_elements(rule.selector)
+
+            # Check if any element matches this selector (or its base)
             try:
-                if self.soup.select(rule.selector):
+                # Try matching with the base selector (without pseudo-elements)
+                if base_selector and self.soup.select(base_selector):
+                    used_rules.append(rule)
+                    self.used_selectors.add(rule.selector)
+                # Also try the full selector in case it doesn't have pseudo-elements
+                elif self.soup.select(rule.selector):
                     used_rules.append(rule)
                     self.used_selectors.add(rule.selector)
             except Exception:
@@ -278,14 +312,31 @@ class StyleOptimizer:
                 css_content.append('}')
                 css_content.append('')
 
-        # Add regular rules
+        # Group rules by media query
+        regular_rules = [r for r in used_rules if r.selector != '@font-face' and not r.media_query]
+        media_rules_by_query = defaultdict(list)
         for rule in used_rules:
-            if rule.selector != '@font-face':
-                css_content.append(f'{rule.selector} {{')
+            if rule.selector != '@font-face' and rule.media_query:
+                media_rules_by_query[rule.media_query].append(rule)
+
+        # Add regular rules (no media query)
+        for rule in regular_rules:
+            css_content.append(f'{rule.selector} {{')
+            for prop, value in rule.declarations.items():
+                css_content.append(f'  {prop}: {value};')
+            css_content.append('}')
+            css_content.append('')
+
+        # Add media query rules
+        for media_query, rules in sorted(media_rules_by_query.items()):
+            css_content.append(f'@media {media_query} {{')
+            for rule in rules:
+                css_content.append(f'  {rule.selector} {{')
                 for prop, value in rule.declarations.items():
-                    css_content.append(f'  {prop}: {value};')
-                css_content.append('}')
-                css_content.append('')
+                    css_content.append(f'    {prop}: {value};')
+                css_content.append('  }')
+            css_content.append('}')
+            css_content.append('')
 
         # Write CSS file
         css_filename = output_html_path.stem + '.css'
@@ -296,11 +347,18 @@ class StyleOptimizer:
         # Modify HTML to reference the CSS file
         soup = processor.soup
 
-        # Remove existing style tags and external CSS links
+        # Remove existing style tags
         for tag in soup.find_all('style'):
             tag.decompose()
+
+        # Remove external CSS links but preserve external font links (Google Fonts, etc.)
         for tag in soup.find_all('link', rel='stylesheet'):
-            tag.decompose()
+            href = tag.get('href', '')
+            # Keep external CDN links (fonts, etc.), remove local ones
+            if href.startswith('http://') or href.startswith('https://') or href.startswith('//'):
+                continue  # Keep external links
+            else:
+                tag.decompose()  # Remove local stylesheet links
 
         # Remove inline styles
         for element in soup.find_all(style=True):
@@ -336,24 +394,47 @@ class StyleOptimizer:
                 css_lines.append('}')
                 css_lines.append('')
 
-        # Add regular rules
+        # Group rules by media query
+        regular_rules = [r for r in used_rules if r.selector != '@font-face' and not r.media_query]
+        media_rules_by_query = defaultdict(list)
         for rule in used_rules:
-            if rule.selector != '@font-face':
-                css_lines.append(f'{rule.selector} {{')
+            if rule.selector != '@font-face' and rule.media_query:
+                media_rules_by_query[rule.media_query].append(rule)
+
+        # Add regular rules (no media query)
+        for rule in regular_rules:
+            css_lines.append(f'{rule.selector} {{')
+            for prop, value in rule.declarations.items():
+                css_lines.append(f'  {prop}: {value};')
+            css_lines.append('}')
+
+        # Add media query rules
+        for media_query, rules in sorted(media_rules_by_query.items()):
+            css_lines.append(f'@media {media_query} {{')
+            for rule in rules:
+                css_lines.append(f'  {rule.selector} {{')
                 for prop, value in rule.declarations.items():
-                    css_lines.append(f'  {prop}: {value};')
-                css_lines.append('}')
+                    css_lines.append(f'    {prop}: {value};')
+                css_lines.append('  }')
+            css_lines.append('}')
 
         css_text = '\n'.join(css_lines)
 
         # Modify HTML
         soup = processor.soup
 
-        # Remove existing style tags and external CSS links
+        # Remove existing style tags
         for tag in soup.find_all('style'):
             tag.decompose()
+
+        # Remove external CSS links but preserve external font links (Google Fonts, etc.)
         for tag in soup.find_all('link', rel='stylesheet'):
-            tag.decompose()
+            href = tag.get('href', '')
+            # Keep external CDN links (fonts, etc.), remove local ones
+            if href.startswith('http://') or href.startswith('https://') or href.startswith('//'):
+                continue  # Keep external links
+            else:
+                tag.decompose()  # Remove local stylesheet links
 
         # Remove inline styles
         for element in soup.find_all(style=True):
@@ -377,14 +458,26 @@ class StyleOptimizer:
             f.write(str(soup))
 
     def generate_output_inline(self, processor: HTMLProcessor, output_html_path: Path):
-        """Generate output with inline styles only"""
+        """Generate output with inline styles only
+
+        Note: @media queries and pseudo-elements cannot be inlined and will be lost in this mode.
+        For email newsletters, consider using the external or style-tag modes instead if you need
+        responsive styles.
+        """
         soup = processor.soup
 
-        # Remove existing style tags and external CSS links
+        # Remove existing style tags
         for tag in soup.find_all('style'):
             tag.decompose()
+
+        # Remove external CSS links but preserve external font links (Google Fonts, etc.)
         for tag in soup.find_all('link', rel='stylesheet'):
-            tag.decompose()
+            href = tag.get('href', '')
+            # Keep external CDN links (fonts, etc.), remove local ones
+            if href.startswith('http://') or href.startswith('https://') or href.startswith('//'):
+                continue  # Keep external links
+            else:
+                tag.decompose()  # Remove local stylesheet links
 
         # Apply computed styles as inline styles
         for element, styles in processor.element_styles.items():
